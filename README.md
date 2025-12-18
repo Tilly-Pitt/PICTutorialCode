@@ -1,2 +1,2 @@
 # PICTutorialCode
-Reproducible code for a logistic-Weibull Prevalence Incidence Cure model
+Reproducible code for a logistic-Weibull Prevalence Incidence Cure model. The PIMCodeTutorial.Rmd runs the full code for a simulation study and aplied application to Diabetic Macular Oedema. PIMCode.R is the source code for the PIMixture package (https://dceg.cancer.gov/tools/analysis/pimixture). Please note for R version 4.5.1. line 3759 of the source code file PIMixture.R should be changed to 'if (inherits(mat2, "numeric")) {' . Other packages to download are at the top of PIMCodeTutorial.Rmd.
