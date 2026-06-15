@@ -4,7 +4,7 @@ output: html_notebook
 ---
 ### This notebook replicates the results in the paper.
 
-All code, other than the simulation study, was ran on a laptop. The simulation study was undertaken on HPC due to computational time. Consider running with a smaller number of simulations if no access to a HPC.
+All code, other than the simulation studies, were ran on a laptop. The simulation studies were undertaken on a HPC due to computational time. Consider running with a smaller number of simulations if no access to a HPC.
 
 #### These are the required packages and source code
 ```{r load packages}
@@ -18,6 +18,8 @@ library(survival) ##Required to fit the PIMixture model
 library(ggpubr) ##Required to fit the PIMixture model
 library(dplyr) ##Required to manipulate the DMO data into the correct format
 source("PIMCode.R") ##Required for comparison to PI method
+library(flexsurvcure) ##Required for comparison to cure model method
+library(purrr)
 ```
 
 ## Simulation study code
@@ -54,7 +56,7 @@ The PIMixture package uses different variable definitions \
 
 
 ```{r data generation}
-datasetfun<-function(n,b1pi, b1delta, b2pi, b2delta, lambda, alpha, lambdax, baselinetestprob, covprob){
+datasetfun<-function(n,b1pi, b1delta, b2pi=0, b2delta=0, lambda, alpha, lambdax=0, baselinetestprob, covprob=0){
 covbin<-rbinom(n,1,covprob)
 prevprob<-exp(b1pi+b2pi*covbin)/(exp(b1delta+b2delta*covbin)+exp(b1pi+b2pi*covbin)+1)
 cureprob<-exp(b1delta+b2delta*covbin)/(exp(b1delta+b2delta*covbin)+exp(b1pi+b2pi*covbin)+1)
@@ -152,7 +154,7 @@ return(simdatacurecov)
 }
 
 ```
-### This function is the JAGS models for a Weibull PIC model using Informative, Vague and misspecified priors
+### This function is the JAGS models for a Weibull PIC model using Informative, Vague and misspecified priors with a single binary covariate
 ```{r PIC code}
 picmodelcovI<-"model{
   for(i in 1:n){
@@ -172,11 +174,11 @@ picmodelcovI<-"model{
   }
   # Prior distributions
   a[2]<-0
-  a[1]~ dnorm(-0.07, 1/0.31^2) 
-  a[3]~ dnorm(1.69, 1/0.22^2)
+  a[1]~ dnorm(-0.025, 1/0.64) 
+  a[3]~ dnorm(1.78, 1/0.46)
   b[2]<-0
-  b[1]~ dnorm(-0.89, 1/0.33^2) 
-  b[3]~ dnorm(0, 1/0.05^2)
+  b[1]~ dnorm(-1.88, 1/1.65) 
+  b[3]~ dnorm(-0.39, 1/0.88)
   covcoef ~ dnorm(-0.69, 1/0.1^2) 
   median ~ dlnorm(log(23/12),1/0.2^2 ) 
   lambda<-median/pow(log(2), 1/alpha)
@@ -214,11 +216,11 @@ picmodelcovV<-"model{
   }
   # Prior distributions
   a[2]<-0
-  a[1]~ dnorm(0, 1) 
-  a[3]~ dnorm(0, 1) 
+  a[1]~ dnorm(0, 1/10) 
+  a[3]~ dnorm(0, 1/10) 
   b[2]<-0
-  b[1]~ dnorm(0, 1) 
-  b[3]~ dnorm(0, 1) 
+  b[1]~ dnorm(0, 1/10) 
+  b[3]~ dnorm(0, 1/10) 
   covcoef ~ dnorm(0, 1)
   median ~ dlnorm(log(2), 1)
   lambda<-median/pow(log(2), 1/alpha)
@@ -278,9 +280,47 @@ picmodelcovM<-"model{
 }
 }"
 
+icmodelV<-"model{
+  for(i in 1:n){
+  for (r in 1:2){
+  q[i,r]<-phi[i,r]/sum(phi[i,])
+  log(phi[i,r])<-a[r]+b[r]*covbin[i]
+  }
+  # Weibull model (incidence subpopulation)
+  lpli[i]<-li[i]/lambda*exp(covbin[i]*covcoef/alpha)
+  lpri[i]<-ri[i]/lambda*exp(covbin[i]*covcoef/alpha)
+  SurvLi[i]<-exp(-pow(lpli[i], alpha))
+  SurvRi[i]<-exp(-pow(lpri[i], alpha))
+  lpli0[i]<-(li[i]+0.01)/lambda*exp(covbin[i]*covcoef/alpha) ##Problem is fixed
+  pdfLi[i]<-alpha/(lambda^alpha)*pow(li[i]+0.01, alpha-1)* exp(covbin[i]*covcoef)*exp(-pow(lpli0[i], alpha)) ##Problem is fixed
+  #Definition of the log-likelihood using zeros trick
+  logLike[i]<-c1[i]*log(q[i,2]*pdfLi[i])+c2[i]*log(q[i,2]*(SurvLi[i]- SurvRi[i]))+c3[i]*(log(q[i,1]+q[i,2]*(SurvLi[i])))+c4[i]*(log(q[i,2]*(1-SurvRi[i])))
+  phi2[i]<-1000000- logLike[i]
+  zeros[i] ~ dpois(phi2[i])
+  }
+  # Prior distributions
+  a[2]<-0
+  a[1]~ dnorm(0, 1/10)
+  b[2]<-0
+  b[1]~ dnorm(0, 1/10) 
+  covcoef~ dnorm(0, 1)
+  cure<-exp(a[1])/(exp(a[1])+exp(a[2]))
+  median ~ dlnorm(log(2), 1) 
+  lambda<-median/pow(log(2), 1/alpha)
+  alpha ~dlnorm(log(1),1) 
+  inc<-1-cure
+  curecov<-exp(a[1]+b[1])/(exp(a[1]+b[1])+exp(a[2]+b[2]))
+  inccov<-1-curecov
+  #Posterior predictive distribution
+  for(j in 1:m){
+  y_prov_cov[j]<-curecov+(1-curecov)*exp(-pow(grid[j]/lambda*exp(covcoef/alpha), alpha))
+  y_prob[j]<-cure+(1-cure)*exp(-pow(grid[j]/lambda, alpha))}
+}"
+
+
 ```
 
-### This code performs the simulation study as in Section.. 
+### This code performs the simulation study
 ```{r simulation study, echo = T, results = 'hide'}
 n=40 ##400, 4000
 nsim=2 ##Should be higher but for illustrative purposes
@@ -311,7 +351,7 @@ ansmatanI<-matrix(data=NA, nrow=nsim, ncol=108)
 ansmatanV<-matrix(data=NA, nrow=nsim, ncol=108)
 ansmatanM<-matrix(data=NA, nrow=nsim, ncol=108)
 ansmatPI<-matrix(data=NA, nrow=nsim, ncol=48)
-
+ansmatanICB<-matrix(data=NA, nrow=nsim, ncol=78)
 
 for(i in 1:nsim){
   print(i)
@@ -422,7 +462,7 @@ for(i in 1:nsim){
         (yr5scov-(1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(5/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])))^2,
         sum(quantile(cismatcov[,2], prob=c(0.025), na.rm=TRUE) < yr5scov & quantile(cismatcov[,2], prob=c(0.975), na.rm=TRUE)> yr5scov), 
         quantile(cismatcov[,2], prob=c(0.975), na.rm=TRUE)-quantile(cismatcov[,2], prob=c(0.025), na.rm=TRUE),
-        yr10s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5])),(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr2s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr2s)^2,sum(quantile(cismat[,3], prob=c(0.025)) < yr10s & quantile(cismat[,3], prob=c(0.975))> yr10s) , quantile(cismat[,3], prob=c(0.975))-quantile(cismat[,3], prob=c(0.025)),
+        yr10s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5])),(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr10s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr10s)^2,sum(quantile(cismat[,3], prob=c(0.025)) < yr10s & quantile(cismat[,3], prob=c(0.975))> yr10s) , quantile(cismat[,3], prob=c(0.975))-quantile(cismat[,3], prob=c(0.025)),
         yr10scov, (1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(10/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])),
         yr10scov-(1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(10/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])),
         (yr10scov-(1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(10/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])))^2,
@@ -447,7 +487,7 @@ for(i in 1:nsim){
         yr5scov-(1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(5/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])),
         (yr5scov-(1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(5/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])))^2,
         NA,NA,
-        yr10s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5])),(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr2s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr2s)^2,
+        yr10s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5])),(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr10s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[3]))^(1/coeffvals[5]))-yr10s)^2,
         NA, NA,
         yr10scov, (1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(10/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])),
         yr10scov-(1-exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])))*exp(-(10/exp(coeffvals[3])*exp(-coeffvals[4]))^(1/coeffvals[5])),
@@ -461,6 +501,24 @@ for(i in 1:nsim){
     }, error= function(e){
       rep(NA,48)})
     })
+    jagscallcov<-jags.model(textConnection(icmodelV), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4), n.iter=10000)  
+  result<-as.mcmc(do.call(rbind, sam4acov))
+  result<-result[1001:10000,]
+    ansmatanICB[i,]<-c(alpha, median(result[,3]), median(result[,3])-alpha, (median(result[,3])-alpha)^2, sum(quantile(result[,3], c(0.025))< alpha & quantile(result[,3], c(0.975))> alpha), quantile(result[,3], c(0.975))-quantile(result[,3], c(0.025)),
+                     lambda, median(result[,11]), median(result[,11])-lambda, (median(result[,11])-lambda)^2, sum(quantile(result[,11], c(0.025))< lambda & quantile(result[,11], c(0.975))> lambda), quantile(result[,11], c(0.975))-quantile(result[,11], c(0.025)),
+                     b1delta, median(result[,1]), median(result[,1])-b1delta, (median(result[,1])-b1delta)^2, sum(quantile(result[,1], c(0.025))< b1delta & quantile(result[,1], c(0.975))> b1delta), quantile(result[,1], c(0.975))-quantile(result[,1], c(0.025)),
+                     b2delta, median(result[,4]), median(result[,4])-b2delta, (median(result[,4])-b2delta)^2, sum(quantile(result[,4], c(0.025))< b2delta & quantile(result[,4], c(0.975))> b2delta), quantile(result[,4], c(0.975))-quantile(result[,4], c(0.025)),
+                     lambdax,  median(result[,6]), median(result[,6])-lambdax, (median(result[,6])-lambdax)^2, sum(quantile(result[,6], c(0.025))< lambdax & quantile(result[,6], c(0.975))> lambdax), quantile(result[,6], c(0.975))-quantile(result[,6], c(0.025)),
+                     yr2s, median(result[,13]), median(result[,13])-yr2s, (median(result[,13])-yr2s)^2, sum(quantile(result[,13], c(0.025))< yr2s & quantile(result[,13], c(0.975))> yr2s), quantile(result[,13], c(0.975))-quantile(result[,13], c(0.025)),
+                     yr2scov, median(result[,16]), median(result[,16])-yr2scov, (median(result[,16])-yr2scov)^2, sum(quantile(result[,16], c(0.025))< yr2scov & quantile(result[,16], c(0.975))> yr2scov), quantile(result[,16], c(0.975))-quantile(result[,16], c(0.025)),
+                     yr5s, median(result[,14]), median(result[,14])-yr5s, (median(result[,14])-yr5s)^2, sum(quantile(result[,14], c(0.025))< yr5s & quantile(result[,14], c(0.975))> yr5s), quantile(result[,14], c(0.975))-quantile(result[,14], c(0.025)),
+                     yr5scov, median(result[,17]), median(result[,17])-yr5scov, (median(result[,17])-yr5scov)^2, sum(quantile(result[,17], c(0.025))< yr5scov & quantile(result[,17], c(0.975))> yr5scov), quantile(result[,17], c(0.975))-quantile(result[,17], c(0.025)),
+                     yr10s, median(result[,15]), median(result[,15])-yr10s, (median(result[,15])-yr10s)^2, sum(quantile(result[,15], c(0.025))< yr10s & quantile(result[,15], c(0.975))> yr10s), quantile(result[,15], c(0.975))-quantile(result[,15], c(0.025)),
+                     yr10scov, median(result[,18]), median(result[,18])-yr10scov, (median(result[,18])-yr10scov)^2, sum(quantile(result[,18], c(0.025))< yr10scov & quantile(result[,18], c(0.975))> yr10scov), quantile(result[,18], c(0.975))-quantile(result[,18], c(0.025)),
+                     curepara, median(result[,7]), median(result[,7])-curepara, (median(result[,7])-curepara)^2, sum(quantile(result[,7], c(0.025))< curepara & quantile(result[,7], c(0.975))> curepara), quantile(result[,7], c(0.975))-quantile(result[,7], c(0.025)),
+                     cureparacov, median(result[,8]), median(result[,8])-cureparacov, (median(result[,8])-cureparacov)^2, sum(quantile(result[,8], c(0.025))< cureparacov & quantile(result[,8], c(0.975))> cureparacov), quantile(result[,8], c(0.975))-quantile(result[,8], c(0.025))
+                     )
   }
 
 
@@ -507,52 +565,71 @@ knitr::kable(simtab1, digits=3)
 yr2s=c(16, round(mean(ansmatanI[,49], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,50:54], na.rm=TRUE),3))
 yr2s1=c(16, round(mean(ansmatanM[,49], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,50:54], na.rm=TRUE),3))
 yr2s2=c(16, round(mean(ansmatanV[,49], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,50:54], na.rm=TRUE),3))
+yr2s3=c(16, round(mean(ansmatanPI[,13], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,2:6], na.rm=TRUE),3))
+yr2s4=c(16, round(mean(ansmatanICB[,31], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,32:36], na.rm=TRUE),3))
+
+
 yr2s3=c(16, round(mean(ansmatanPI[,1], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,2:6], na.rm=TRUE),3))
 yr2scov=c(18, round(mean(ansmatanI[,55], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,56:60], na.rm=TRUE),3))
 yr2scov1=c(18, round(mean(ansmatanM[,55], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,56:60], na.rm=TRUE),3))
 yr2scov2=c(18, round(mean(ansmatanV[,55], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,56:60], na.rm=TRUE),3))
 yr2scov3=c(18, round(mean(ansmatanPI[,7], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,8:12], na.rm=TRUE),3))
+yr2scov4=c(18, round(mean(ansmatanICB[,37], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,38:42], na.rm=TRUE),3))
+
 yr5s=c(16, round(mean(ansmatanI[,61], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,62:66], na.rm=TRUE),3))
 yr5s1=c(16,round(mean(ansmatanM[,61], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,62:66], na.rm=TRUE),3))
 yr5s2=c(16,round(mean(ansmatanV[,61], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,62:66], na.rm=TRUE),3))
 yr5s3=c(16, round(mean(ansmatanPI[,13], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,14:18], na.rm=TRUE),3))
+yr5s4=c(16, round(mean(ansmatanICB[,43], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,44:48], na.rm=TRUE),3))
+
 yr5scov=c(18,round(mean(ansmatanI[,67], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,68:72], na.rm=TRUE),3))
 yr5scov1=c(18,round(mean(ansmatanM[,67], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,68:72], na.rm=TRUE),3))
 yr5scov2=c(18,round(mean(ansmatanV[,67], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,68:72], na.rm=TRUE),3))
 yr5scov3=c(18, round(mean(ansmatanPI[,19], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,20:24], na.rm=TRUE),3))
+yr5scov4=c(18, round(mean(ansmatanICB[,49], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,50:54], na.rm=TRUE),3))
+
 yr10s=c(16,round(mean(ansmatanI[,73], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,74:78], na.rm=TRUE),3))
 yr10s1=c(16,round(mean(ansmatanM[,73], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,74:78], na.rm=TRUE),3))
 yr10s2=c(16,round(mean(ansmatanV[,73], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,74:78], na.rm=TRUE),3))
 yr10s3<-c(16, round(mean(ansmatanPI[,25], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,26:30], na.rm=TRUE),3))
+yr10s3<-c(16, round(mean(ansmatanICB[,55], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,56:60], na.rm=TRUE),3))
+
 yr10scov=c(18,round(mean(ansmatanI[,79], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,80:84], na.rm=TRUE),3))
 yr10scov1=c(18,round(mean(ansmatanM[,79], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,80:84], na.rm=TRUE),3))
 yr10scov2=c(18,round(mean(ansmatanV[,79], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,80:84], na.rm=TRUE),3))
 yr10scov3<-c(18, round(mean(ansmatanPI[,31], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,32:36], na.rm=TRUE),3))
+yr10scov3<-c(18, round(mean(ansmatanICB[,61], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,62:66], na.rm=TRUE),3))
+
 prevalence16=c(16,round(mean(ansmatanI[,85], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,86:90], na.rm=TRUE),3))
 prevalence161=c(16,round(mean(ansmatanM[,85], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,86:90], na.rm=TRUE),3))
 prevalence162=c(16,round(mean(ansmatanV[,85], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,86:90], na.rm=TRUE),3))
 prevalence163<-c(16, round(mean(ansmatanPI[,37], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,38:42], na.rm=TRUE),3))
+
 cure16=c(16,round(mean(ansmatanI[,91], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,92:96], na.rm=TRUE),3))
 cure161=c(16,round(mean(ansmatanM[,91], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,92:96], na.rm=TRUE),3))
 cure162=c(16,round(mean(ansmatanV[,91], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,92:96], na.rm=TRUE),3))
+cure163=c(16,round(mean(ansmatanICB[,67], na.rm=TRUE),3), "IC", round(colMeans(ansmatanICB[,68:72], na.rm=TRUE),3))
+
 prevalence18=c(18,round(mean(ansmatanI[,97], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,98:102], na.rm=TRUE),3))
 prevalence181=c(18,round(mean(ansmatanM[,97], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,98:102], na.rm=TRUE),3))
 prevalence182=c(18,round(mean(ansmatanV[,97], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,98:102], na.rm=TRUE),3))
 prevalence183<-c(18, round(mean(ansmatanPI[,43], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,44:48], na.rm=TRUE),3))
+
 cure18=c(18,round(mean(ansmatanI[,103], na.rm=TRUE),3), "Informative", round(colMeans(ansmatanI[,104:108], na.rm=TRUE),3))
 cure181=c(18,round(mean(ansmatanM[,103], na.rm=TRUE),3), "Misspecified", round(colMeans(ansmatanM[,104:108], na.rm=TRUE),3))
 cure182=c(18,round(mean(ansmatanV[,103], na.rm=TRUE),3), "Vague", round(colMeans(ansmatanV[,104:108], na.rm=TRUE),3))
+cure183=c(18,round(mean(ansmatanICB[,73], na.rm=TRUE),3), "IC", round(colMeans(ansmatanV[,74:78], na.rm=TRUE),3))
 
-simtab2<-rbind(yr2s,yr2s1,yr2s2, yr2s3,
-               yr2scov,yr2scov1,yr2scov2,yr2scov3,
-               yr5s, yr5s1, yr5s2,yr5s3,
-               yr5scov, yr5scov1, yr5scov2,yr5scov3,
-               yr10s, yr10s1, yr10s2,yr10s3,
-               yr10scov, yr10scov1, yr10scov2,yr10scov3,
+simtab2<-rbind(yr2s,yr2s1,yr2s2, yr2s3, yr2s4,
+               yr2scov,yr2scov1,yr2scov2,yr2scov3,yr2scov4,
+               yr5s, yr5s1, yr5s2,yr5s3,yr5s4,
+               yr5scov, yr5scov1, yr5scov2,yr5scov3,yr5scov4,
+               yr10s, yr10s1, yr10s2,yr10s3,yr10s4,
+               yr10scov, yr10scov1, yr10scov2,yr10scov3,yr10scov4,
                prevalence16, prevalence161, prevalence162, prevalence163,
                prevalence18, prevalence181, prevalence182,prevalence183,
-               cure16, cure161, cure162,
-               cure18, cure181, cure182)
+               cure16, cure161, cure162, cure163,
+               cure18, cure181, cure182,cure183)
 
 
 colnames(simtab2)<-c("Strain", "True value", "Model", "Mean", "Bias", "MSE", "Coverage", "95% CI width" )
@@ -615,22 +692,24 @@ temp$ri2[is.infinite(temp$ri2)]<-100
 temp$li2<-temp$li/30
 temp$li2[temp$baselineresult==1]<--999
 
-picdata<- temp %>% dplyr::select(li, ri, c1, c2, c3, c4, c0, cna, status,baselineresult2, li2, ri2)
+picdata<- temp %>% dplyr::select(li, ri, c1, c2, c3, c4, c0, cna, status,baselineresult2, li2, ri2, sex)
 
 picdata<-picdata %>% mutate(kmstatus=ifelse(c1==1, 1, ifelse(c2==1, 3, ifelse(c3==1, 0, 2))))
 ```
 
-### This is the JAGS model, the code to fit the PIC model for the DMO example and the results
-```{r dmo PIC, echo = T, results = 'hide'}
-picmodel4<-"model{
+###This is the JAGS code to fit the PIC model to the DMO example with 1 covariate and print the results
+```{r dmo PIC with cov, echo = T, results = 'hide'}
+picmodel5<-"model{
   for(i in 1:n){
   for (r in 1:3){
   q[i,r]<-phi[i,r]/sum(phi[i,])
-  log(phi[i,r])<-a[r]
+  log(phi[i,r])<-a[r]+b[r]*covbin[i]
   }
   # Weibull model (incidence subpopulation)
-  SurvLi[i]<-exp(-pow(li[i]/lambda, alpha))
-  SurvRi[i]<-exp(-pow(ri[i]/lambda, alpha))
+  lpli[i]<-li[i]/lambda*exp(covbin[i]*covcoef/alpha)
+  lpri[i]<-ri[i]/lambda*exp(covbin[i]*covcoef/alpha)
+  SurvLi[i]<-exp(-pow(lpli[i], alpha))
+  SurvRi[i]<-exp(-pow(lpri[i], alpha))
   #Definition of the log-likelihood using zeros trick
   logLike[i]<-c1[i]*log(q[i,1])+c2[i]*log(q[i,2]*(SurvLi[i]- SurvRi[i]))+c3[i]*(log(q[i,3]+q[i,2]*(SurvLi[i])))+c4[i]*(log(q[i,1]+q[i,2]*(1-SurvRi[i])))
   phi2[i]<-100000- logLike[i]
@@ -641,112 +720,257 @@ picmodel4<-"model{
   a[2]<-0
   a[1]~ dnorm(-1.84, 5.95) ##1.56
   a[3]~ dnorm(-1.84, 5.95)
+  b[2]<-0
+  b[1]~ dnorm(0, 1) 
+  b[3]~ dnorm(0, 1)
+  covcoef~ dnorm(0, 1)
   prev<-exp(a[1])/(exp(a[1])+exp(a[2])+exp(a[3]))
   cure<-exp(a[3])/(exp(a[1])+exp(a[2])+exp(a[3]))
   median ~ dlnorm(2.3, 5) 
   lambda<-median/pow(log(2), 1/alpha)
   alpha ~dlnorm(log(1),1/0.5) 
   inc<-1-prev-cure
+  prevcov<-exp(a[1]+b[1])/(exp(a[1]+b[1])+exp(a[2]+b[2])+exp(a[3]+b[3]))
+  curecov<-exp(a[3]+b[3])/(exp(a[1]+b[1])+exp(a[2]+b[2])+exp(a[3]+b[3]))
+  inccov<-1-prevcov-curecov
   #Posterior predictive distribution
   for(j in 1:m){
   y_prob[j]<-cure+(1-cure-prev)*exp(-pow(grid[j]/lambda, alpha))
-  }
+  y_prov_cov[j]<-curecov+(1-curecov-prevcov)*exp(-pow(grid[j]/lambda*exp(covcoef/alpha), alpha))
+}
 }"
+
+pars_basic4<-c("a","b","covcoef","alpha", "lambda", "prev","cure", "inc", "prevcov", "curecov", "inccov", "y_prob", 'y_prov_cov')
+
 
 invals4 <- list(median=10, alpha=1.4)
 grid=seq(0,52.6, by=0.01)
+picdata$sexcov<-2-as.numeric(as.factor(picdata$sex))
 ##swap days to months
 dat<-list(n=nrow(picdata), li=picdata$li/30, ri=picdata$ri/30, 
           c1=picdata$c1, c2=picdata$c2, c3=picdata$c3, c4=picdata$c4, 
-          zeros=rep(0, nrow(picdata)), grid=grid, m=length(grid))
+          zeros=rep(0, nrow(picdata)), grid=grid, m=length(grid),covbin=picdata$sexcov )
 
-jagscall4<-jags.model(textConnection(picmodel4), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+jagscall4<-jags.model(textConnection(picmodel5), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
 
-pars_basic4<-c("a", "alpha", "lambda", "prev","cure", "y_prob")
+
 
 sam4a<-coda.samples(jagscall4, c(pars_basic4), n.iter=10000)  
 
-result<-as.mcmc(do.call(rbind, sam4a))
+resultPIC<-as.mcmc(do.call(rbind, sam4a))
 
-alphaci<-paste(round(quantile(result[,4], c(0.5)), 2), " (", round(quantile(result[,4], c(0.025)),2),",",round(quantile(result[,4], c(0.975)),2), ")", sep="")
+alphaci<-paste(round(quantile(resultPIC[,4], c(0.5)), 2), " (", round(quantile(resultPIC[,4], c(0.025)),2),",",round(quantile(resultPIC[,4], c(0.975)),2), ")", sep="")
 
-lambdaci<-paste(round(exp(1/quantile(result[,6], c(0.5))), 2), " (", round(exp(1/quantile(result[,6], c(0.025))),2),",",round(exp(1/quantile(result[,6], c(0.975))),2), ")", sep="")
-lambdaci<-paste(round(quantile(result[,6], c(0.5)), 2), " (", round(quantile(result[,6], c(0.025)),2),",",round(quantile(result[,6], c(0.975)),2), ")", sep="")
+lambdaci<-paste(round(quantile(resultPIC[,13], c(0.5)), 2), " (", round(quantile(resultPIC[,13], c(0.025)),2),",",round(quantile(resultPIC[,13], c(0.975)),2), ")", sep="")
 
-prevci<-paste(round(quantile(result[,7], c(0.5)), 2), " (", round(quantile(result[,7], c(0.025)),2),",",round(quantile(result[,7], c(0.975)),2), ")", sep="")
+prevci<-paste(round(quantile(resultPIC[,14], c(0.5)), 2), " (", round(quantile(resultPIC[,14], c(0.025)),2),",",round(quantile(resultPIC[,14], c(0.975)),2), ")", sep="")
 
-cureci<-paste(round(quantile(result[,5], c(0.5)), 2), " (", round(quantile(result[,5], c(0.025)),2),",",round(quantile(result[,5], c(0.975)),2), ")", sep="")
+cureci<-paste(round(quantile(resultPIC[,9], c(0.5)), 2), " (", round(quantile(resultPIC[,9], c(0.025)),2),",",round(quantile(resultPIC[,9], c(0.975)),2), ")", sep="")
 
-median_s<-apply(result[,8:5268],2, median)
-lower_s<-apply(result[,8:5268],2, quantile, prob=0.025)
-upper_s<-apply(result[,8:5268],2, quantile, prob=0.975)
+prevcovci<-paste(round(quantile(resultPIC[,15], c(0.5)), 2), " (", round(quantile(resultPIC[,15], c(0.025)),2),",",round(quantile(resultPIC[,15], c(0.975)),2), ")", sep="")
 
-dfPIC<-rbind(alphaci, lambdaci, prevci, cureci)
+curecovci<-paste(round(quantile(resultPIC[,10], c(0.5)), 2), " (", round(quantile(resultPIC[,10], c(0.025)),2),",",round(quantile(resultPIC[,10], c(0.975)),2), ")", sep="")
+
+coefficientci<-paste(round(quantile(resultPIC[,8], c(0.5)), 2), " (", round(quantile(resultPIC[,8], c(0.025)),2),",",round(quantile(resultPIC[,8], c(0.975)),2), ")", sep="")
+
+
+m_median_s<-apply(resultPIC[,16:5276],2, median)
+m_lower_s<-apply(resultPIC[,16:5276],2, quantile, prob=0.025)
+m_upper_s<-apply(resultPIC[,16:5276],2, quantile, prob=0.975)
+f_median_s<-apply(resultPIC[,5277:10537],2, median)
+f_lower_s<-apply(resultPIC[,5277:10537],2, quantile, prob=0.025)
+f_upper_s<-apply(resultPIC[,5277:10537],2, quantile, prob=0.975)
+
+dfPIC<-rbind(alphaci, lambdaci, prevci,prevcovci, cureci,curecovci,coefficientci)
 colnames(dfPIC)<-c("Mean estimate (95% Credible intervals)")
-rownames(dfPIC)<-c("alpha", "lambda", "prevalence", "cure")
-knitr::kable(dfPIC, caption="Estimates for DMO data using PIC model")
+rownames(dfPIC)<-c("alpha", "lambda", "prevalence in men", "prevalence in women", "cure in men", "cure in women", "coefficient")
+knitr::kable(dfPIC, caption="Estimates for DMO data using PIC model with covariate by sex")
 
 ```
-### This is the code to fit the PI model for the DMO example and the results.
-```{r dmo pi}
-modeldmo<-"baselineresult2+li2+ri2~1"
+
+###This is the JAGS code to fit the DMO example with 1 covariate as an incidence cure model
+```{r ic for dmo with cov}
+icmodeldmo<-"model{
+  for(i in 1:n){
+  for (r in 1:2){
+  q[i,r]<-phi[i,r]/sum(phi[i,])
+  log(phi[i,r])<-a[r]+b[r]*covbin[i]
+  }
+  # Weibull model (incidence subpopulation)
+  lpli[i]<-li[i]/lambda*exp(covbin[i]*covcoef/alpha)
+  lpri[i]<-ri[i]/lambda*exp(covbin[i]*covcoef/alpha)
+  SurvLi[i]<-exp(-pow(lpli[i], alpha))
+  SurvRi[i]<-exp(-pow(lpri[i], alpha))
+  lpli0[i]<-(li[i]+0.01)/lambda*exp(covbin[i]*covcoef/alpha) ##Problem is fixed
+  pdfLi[i]<-alpha/(lambda^alpha)*pow(li[i]+0.01, alpha-1)* exp(covbin[i]*covcoef)*exp(-pow(lpli0[i], alpha)) ##Problem is fixed
+  #Definition of the log-likelihood using zeros trick
+  logLike[i]<-c1[i]*log(q[i,2]*pdfLi[i])+c2[i]*log(q[i,2]*(SurvLi[i]- SurvRi[i]))+c3[i]*(log(q[i,1]+q[i,2]*(SurvLi[i])))+c4[i]*(log(q[i,2]*(1-SurvRi[i])))
+  phi2[i]<-1000000- logLike[i]
+  zeros[i] ~ dpois(phi2[i])
+  }
+  # Prior distributions
+  a[2]<-0
+  a[1]~ dnorm(-1.5, 5.95) ##1.56
+  b[2]<-0
+  b[1]~ dnorm(0, 1) 
+  covcoef~ dnorm(0, 1)
+  cure<-exp(a[1])/(exp(a[1])+exp(a[2]))
+  median ~ dlnorm(log(3), 5) 
+  lambda<-median/pow(log(2), 1/alpha)
+  alpha ~dlnorm(log(1),1/0.5) 
+  inc<-1-cure
+  curecov<-exp(a[1]+b[1])/(exp(a[1]+b[1])+exp(a[2]+b[2]))
+  inccov<-1-curecov
+  #Posterior predictive distribution
+  for(j in 1:m){
+  y_prov_cov[j]<-curecov+(1-curecov)*exp(-pow(grid[j]/lambda*exp(covcoef/alpha), alpha))
+  y_prob[j]<-cure+(1-cure)*exp(-pow(grid[j]/lambda, alpha))}
+}"
+
+pars_basic4<-c("a","b","covcoef","alpha", "lambda", "cure", "inc",  "curecov", "inccov", "median", "y_prob", 'y_prov_cov')
+
+invals4 <- list(median=10, alpha=0.6)#, covcoef=0)
+grid=seq(0,52.6, by=0.01)
+picdata$sexcov<-2-as.numeric(as.factor(picdata$sex))
+##swap days to months
+picdata$li3<-picdata$li
+picdata$li3[picdata$li3==0]<-0.01
+
+dat<-list(n=nrow(picdata), li=picdata$li/30, ri=picdata$ri/30, 
+          c1=picdata$c1, c2=picdata$c2, c3=picdata$c3, c4=picdata$c4, 
+          zeros=rep(0, nrow(picdata)), covbin=picdata$sexcov,grid=grid, m=length(grid))
+
+jagscall4<-jags.model(textConnection(icmodeldmo), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+
+sam4a2<-coda.samples(jagscall4, c(pars_basic4), n.iter=10000)  
+
+resultic<-as.mcmc(do.call(rbind, sam4a2))
+
+alphaci<-paste(round(quantile(resultic[,3], c(0.5)), 2), " (", round(quantile(resultic[,3], c(0.025)),2),",",round(quantile(resultic[,3], c(0.975)),2), ")", sep="")
+
+lambdaci<-paste(round(quantile(resultic[,11], c(0.5)), 2), " (", round(quantile(resultic[,11], c(0.025)),2),",",round(quantile(resultic[,11], c(0.975)),2), ")", sep="")
+
+cureci<-paste(round(quantile(resultic[,7], c(0.5)), 2), " (", round(quantile(resultic[,7], c(0.025)),2),",",round(quantile(resultic[,7], c(0.975)),2), ")", sep="")
+
+curecovci<-paste(round(quantile(resultic[,8], c(0.5)), 2), " (", round(quantile(resultic[,8], c(0.025)),2),",",round(quantile(resultic[,8], c(0.975)),2), ")", sep="")
+
+coefficientci<-paste(round(quantile(resultic[,6], c(0.5)), 2), " (", round(quantile(resultic[,6], c(0.025)),2),",",round(quantile(resultic[,6], c(0.975)),2), ")", sep="")
+
+
+m_median_ic<-apply(resultic[,12:5272],2, median)
+m_lower_ic <-apply(resultic[,12:5272],2, quantile, prob=0.025)
+m_upper_ic<-apply(resultic[,12:5272],2, quantile, prob=0.975)
+f_median_ic<-apply(resultic[,5273:10533],2, median)
+f_lower_ic<-apply(resultic[,5273:10533],2, quantile, prob=0.025)
+f_upper_ic<-apply(resultic[,5273:10533],2, quantile, prob=0.975)
+
+dfIC<-rbind(alphaci, lambdaci, cureci,curecovci,coefficientci)
+colnames(dfIC)<-c("Mean estimate (95% Credible intervals)")
+rownames(dfIC)<-c("alpha", "lambda", "cure in men", "cure in women", "coefficient")
+knitr::kable(dfIC, caption="Estimates for DMO data using Cure model with covariate by sex")
+```
+
+### This is the code to fit the PI model with 1 covariate for the DMO example and the results.
+```{r dmo pi with cov}
+modeldmo<-"baselineresult2+li2+ri2~sexcov"
 fitdmo<-PIMixture(p.model=modeldmo,data=picdata, model="logistic-Weibull")
 coeffvals<-fitdmo$regression.coef$Coef.
 livals<-fitdmo$regression.coef$`95%LL`
 uivals<-fitdmo$regression.coef$`95%UL`
 
-alphaci<-paste(round(1/coeffvals[3],2), " (",round(1/uivals[3],2) ,",",round(1/livals[3],2), ")", sep="")
+cimat<-matrix(data=NA, nrow=10000, ncol=length(grid))
+cimatcov<-matrix(data=NA, nrow=10000, ncol=length(grid))
+covcoefvec<-c()
+for(k in 1:10000){
+samplepara<-mvrnorm(1, mu=coeffvals, Sigma=fitdmo$covariance)
+        sampleprev<-exp(samplepara[1])/(1+exp(samplepara[1]))
+        #sampleprevec[k]<-exp(samplepara[1])/(1+exp(samplepara[1]))
+        sampleprevcov<-exp(samplepara[1]+samplepara[2])/(1+exp(samplepara[1]+samplepara[2]))
+        #sampleprevcovec[k]<-exp(samplepara[1]+samplepara[2])/(1+exp(samplepara[1]+samplepara[2]))
+        samplelambda<-exp(samplepara[3])
+        samplealpha<-1/samplepara[5]
+        cimat[k,]<-(1-sampleprev)*exp(-(grid/samplelambda)^samplealpha)
+        cimatcov[k,]<-(1-sampleprevcov)*exp(-(grid/samplelambda*exp(-samplepara[4]))^samplealpha)
+        covcoefvec[k]<--samplepara[4]*samplealpha
+}
 
-lambdaci<-paste(round(exp(coeffvals[2]),2) , " (",round(exp(livals[2]),2) ,",",round(exp(uivals[2]),2), ")", sep="")
+alphaci<-paste(round(1/coeffvals[5],2), " (",round(1/uivals[5],2) ,",",round(1/livals[5],2), ")", sep="")
+
+lambdaci<-paste(round(exp(coeffvals[3]),2) , " (",round(exp(livals[3]),2) ,",",round(exp(uivals[3]),2), ")", sep="")
 
 prevci<-paste(round(exp(coeffvals[1])/(1+exp(coeffvals[1])),2), " (",round(exp(livals[1])/(1+exp(livals[1])),2) ,",",round(exp(uivals[1])/(1+exp(uivals[1])), 2), ")", sep="")
 
-cimat<-matrix(data=NA, nrow=10000, ncol=length(grid))
-for(i in 1:10000){
-  samplepara<-mvrnorm(1, mu=coeffvals, Sigma=fitdmo$covariance)
-  sampleprev<-exp(samplepara[1])/(1+exp(samplepara[1]))
-  samplelambda<-exp(samplepara[2])
-  samplealpha<-1/samplepara[3]
-  cimat[i,]<-(1-sampleprev)*exp(-(grid/samplelambda)^samplealpha)
-}
-median_pi<-apply(cimat, 2, median)
-lower_pi<-apply(cimat,2, quantile, prob=0.025)
-upper_pi<-apply(cimat,2, quantile, prob=0.975)
+prevcovci<-paste(round(exp(coeffvals[1]+coeffvals[2])/(1+exp(coeffvals[1]+coeffvals[2])),2), " (",round(exp(livals[1]+livals[2])/(1+exp(livals[1]+livals[2])),2) ,",",round(exp(uivals[1]+uivals[2])/(1+exp(uivals[1]+uivals[2])), 2), ")", sep="")
 
-dfPI<-rbind(alphaci, lambdaci, prevci )
+coefficientci<-paste(round(median(covcoefvec),2), " (",round(quantile(covcoefvec, prob=0.025),2) ,",",round(quantile(covcoefvec, prob=0.975),2), ")", sep="")
+
+m_median_pi<-apply(cimat, 2, median)
+m_lower_pi<-apply(cimat,2, quantile, prob=0.025)
+m_upper_pi<-apply(cimat,2, quantile, prob=0.975)
+
+
+f_median_pi<-apply(cimatcov, 2, median)
+f_lower_pi<-apply(cimatcov,2, quantile, prob=0.025)
+f_upper_pi<-apply(cimatcov,2, quantile, prob=0.975)
+
+
+dfPI<-rbind(alphaci, lambdaci, prevci, prevcovci,coefficientci )
 
 colnames(dfPI)<-c("Estimate (95% Confidence intervals)")
-rownames(dfPI)<-c("alpha", "lambda", "prevalence ")
+rownames(dfPI)<-c("alpha", "lambda", "male prevalence ", "female prevalence", "coefficient")
 knitr::kable(dfPI, caption="Estimates for DMO data using PI model")
 
 
 ```
-### This is the code to plot the fits of the non-parametric maximum likelihood estimator (Turnbull), PI model and PIC model for the DMO example with confidence/ credible intervals.
 
-```{r plot results with ci, message=FALSE}
-surv1<-survfit(Surv(picdata$li/30, picdata$ri/30, picdata$kmstatus, type="interval")~1)
+### This is the code to plot the fits of the non-parametric maximum likelihood estimator (Turnbull), PI model and PIC model for the DMO example with confidence/ credible intervals and a covariate.
+```{r plot results with ci and cov, message=FALSE}
+surv1_m<-survfit(Surv(picdata$li[picdata$sexcov==0]/30, picdata$ri[picdata$sexcov==0]/30, picdata$kmstatus[picdata$sexcov==0], type="interval")~1)
 
-km_df<-data.frame(time_km=surv1$time, median_km=surv1$surv, lower_km=surv1$lower, upper_km=surv1$upper)
+surv1_f<-survfit(Surv(picdata$li[picdata$sexcov==1]/30, picdata$ri[picdata$sexcov==1]/30, picdata$kmstatus[picdata$sexcov==1], type="interval")~1)
 
-plot_data_pi <- data.frame(time=grid, median=median_pi, lower=lower_pi, upper=upper_pi, type = "PI Model")
+km_df_m<-data.frame(time_km=surv1_m$time, median_km=surv1_m$surv, lower_km=surv1_m$lower, upper_km=surv1_m$upper)
 
-plot_data_s <- data.frame(time=grid, median=median_s, lower=lower_s, upper=upper_s, type="PIC Model")
+km_df_f<-data.frame(time_km=surv1_f$time, median_km=surv1_f$surv, lower_km=surv1_f$lower, upper_km=surv1_f$upper)
 
-plot_all <- rbind(plot_data_pi, plot_data_s)
+plot_data_pi_m <- data.frame(time=grid, median=m_median_pi, lower=m_lower_pi, upper=m_upper_pi, type = "PI Model")
 
-ggplot()+geom_ribbon(data = plot_all, aes(x=time, ymin=lower, ymax=upper, fill=type), alpha=0.25) +
-  geom_line(data=plot_all, aes(x=time, y=median, color=type,linetype = type), linewidth=0.5) + #, linetype = type
-  geom_step(data=km_df, aes(x=time_km, y=median_km, color="NPMLE",linetype="NPMLE"), linewidth=1) + # linetype="dashed"
-  geom_ribbon(data=km_df, aes(x=time_km, ymin=lower_km, ymax=upper_km, fill="NPMLE"), alpha=0.25) +
+plot_data_s_m <- data.frame(time=grid, median=m_median_s, lower=m_lower_s, upper=m_upper_s, type="PIC Model")
+
+plot_data_pi_f <- data.frame(time=grid, median=f_median_pi, lower=f_lower_pi, upper=f_upper_pi, type = "PI Model")
+
+plot_data_s_f <- data.frame(time=grid, median=f_median_s, lower=f_lower_s, upper=f_upper_s, type="PIC Model")
+
+plot_data_ic_m <- data.frame(time=grid, median=m_median_ic, lower=m_lower_ic, upper=m_upper_ic, type="IC Model")
+
+plot_data_ic_f <- data.frame(time=grid, median=f_median_ic, lower=f_lower_ic, upper=f_upper_ic, type="IC Model")
+
+plot_all <- rbind(plot_data_pi_m, plot_data_s_m, plot_data_pi_f, plot_data_s_f, plot_data_ic_m, plot_data_ic_f)#,plot_data_fc )
+
+plot_male <- rbind(plot_data_pi_m, plot_data_s_m, plot_data_ic_m)#,plot_data_fc )
+
+plot_female <- rbind(plot_data_pi_f, plot_data_s_f, plot_data_ic_f)#,plot_data_fc )
+
+
+##Male
+ggplot()+geom_ribbon(data = plot_male, aes(x=time, ymin=lower, ymax=upper, fill=type), alpha=0.25) +
+  geom_line(data=plot_male, aes(x=time, y=median, color=type, linetype = type), linewidth=0.5) + 
+  geom_step(data=km_df_m, aes(x=time_km, y=median_km, color="NPMLE",linetype="NPMLE"), linewidth=1) + 
+  geom_ribbon(data=km_df_m, aes(x=time_km, ymin=lower_km, ymax=upper_km, fill="NPMLE"), alpha=0.25) +
   theme_bw()+
-  labs( title = "Estimated probabilty of not reaching VA \U2265  70 over time",
+  labs( title = "Estimated probabilty of not reaching VA \U2265  70 over time for Males",
     x="Time (months) since treatment initiation", y="Probability of VA \U2264 69", color="Fit", fill="Fit", linetype="Fit")+scale_x_continuous(breaks = c(0,10, 20,30, 40,50), expand = c(0, 0), limits=c(0,50))+
-  theme(plot.title = element_text(hjust = 0.5, size=18), legend.text = element_text(size = 16), axis.text = element_text(size = 14), axis.title.x = element_text(size = 16), axis.title.y = element_text(size = 16), legend.title = element_text(size = 16))+
-  scale_linetype_manual(values = c(
-    "PI Model" = "dotted",
-    "PIC Model" = "solid",
-    "NPMLE" = "dashed"    # or change to dashed etc.
-  ))+scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8,1), limits=c(0,1), expand = c(0, 0))
+  theme(plot.title = element_text(hjust = 0.5, size=18), legend.text = element_text(size = 16), axis.text = element_text(size = 14), axis.title.x = element_text(size = 16), axis.title.y = element_text(size = 16), legend.title = element_text(size = 16))+scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8,1), limits=c(0,1), expand = c(0, 0))
+
+##Female
+ggplot()+geom_ribbon(data = plot_female, aes(x=time, ymin=lower, ymax=upper, fill=type), alpha=0.25) +
+  geom_line(data=plot_female, aes(x=time, y=median, color=type, linetype = type), linewidth=0.5) +
+  geom_step(data=km_df_f, aes(x=time_km, y=median_km, color="NPMLE",linetype="NPMLE"), linewidth=1) + 
+  geom_ribbon(data=km_df_f, aes(x=time_km, ymin=lower_km, ymax=upper_km, fill="NPMLE"), alpha=0.25) +
+  theme_bw()+
+  labs( title = "Estimated probabilty of not reaching VA \U2265  70 over time for Females",
+    x="Time (months) since treatment initiation", y="Probability of VA \U2264 69", color="Fit", fill="Fit", linetype="Fit")+scale_x_continuous(breaks = c(0,10, 20,30, 40,50), expand = c(0, 0), limits=c(0,50))+
+  theme(plot.title = element_text(hjust = 0.5, size=18), legend.text = element_text(size = 16), axis.text = element_text(size = 14), axis.title.x = element_text(size = 16), axis.title.y = element_text(size = 16), legend.title = element_text(size = 16))+scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8,1), limits=c(0,1), expand = c(0, 0))#+ 
 
 ##Survival probability at 4 years (48 months)
 dmosurv48<-rbind(1-(mean(result[,7])+(1-mean(result[,7])-mean(result[,5]))*pweibull(48, mean(result[,4]), mean(result[,6]))), 1-(exp(coeffvals[1])/(1+exp(coeffvals[1]))+(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*pweibull(48, 1/coeffvals[3], exp(coeffvals[2]))))
@@ -755,3 +979,315 @@ colnames(dmosurv48)<-c("4 year survival estimate")
 knitr::kable(dmosurv48, caption="Survival estimate at 4 years for the DMO data using PI and PIC model")
 ```
 
+##This is the code for the smaller sensitivity analysis in the appendix
+```{r code for smaller sensitivity simulation study}
+picmodelV<-"model{
+  for(i in 1:n){
+  for (r in 1:3){
+  q[i,r]<-phi[i,r]/sum(phi[i,])
+  log(phi[i,r])<-a[r]
+  }
+  # Weibull model (incidence subpopulation)
+  lpli[i]<-li[i]/lambda
+  lpri[i]<-ri[i]/lambda
+  SurvLi[i]<-exp(-pow(lpli[i], alpha))
+  SurvRi[i]<-exp(-pow(lpri[i], alpha))
+  #Definition of the log-likelihood using zeros trick
+  logLike[i]<-c1[i]*log(q[i,1])+c2[i]*log(q[i,2]*(SurvLi[i]- SurvRi[i]))+c3[i]*(log(q[i,3]+q[i,2]*(SurvLi[i])))+c4[i]*(log(q[i,1]+q[i,2]*(1-SurvRi[i])))
+  phi2[i]<-100000- logLike[i]
+  zeros[i] ~ dpois(phi2[i])
+  }
+  # Prior distributions
+  a[2]<-0
+  a[1]~ dnorm(0, 1) 
+  a[3]~ dnorm(0, 1) 
+  median ~ dlnorm(log(2), 1)
+  lambda<-median/pow(log(2), 1/alpha)
+  alpha ~dlnorm(log(1),1) 
+  prev<-exp(a[1])/(exp(a[1])+exp(a[2])+exp(a[3]))
+  cure<-exp(a[3])/(exp(a[1])+exp(a[2])+exp(a[3]))
+  inc<-1-prev-cure
+  #Posterior predictive distribution
+  for(j in 1:m){
+  y_prob[j]<-cure+(1-cure-prev)*exp(-pow(grid[j]/lambda, alpha))
+}
+}"
+
+icmodelV<-"model{
+  for(i in 1:n){
+  for (r in 1:2){
+  q[i,r]<-phi[i,r]/sum(phi[i,])
+  log(phi[i,r])<-a[r]
+  }
+  # Weibull model (incidence subpopulation)
+  SurvLi[i]<-exp(-pow(li[i]/lambda, alpha))
+  SurvRi[i]<-exp(-pow(ri[i]/lambda, alpha))
+  pdfLi[i]<-alpha/(lambda^alpha)*pow(li[i]+0.01, alpha-1)*exp(-pow((li[i]+0.001)/lambda, alpha)) #This is fixed
+  #Definition of the log-likelihood using zeros trick
+  logLike[i]<-c1[i]*log(q[i,2]*pdfLi[i])+c2[i]*log(q[i,2]*(SurvLi[i]- SurvRi[i]))+c3[i]*(log(q[i,1]+q[i,2]*(SurvLi[i])))+c4[i]*(log(q[i,2]*(1-SurvRi[i])))
+  phi2[i]<-100000- logLike[i]
+  zeros[i] ~ dpois(phi2[i])
+  }
+  # Prior distributions
+  #just intercept, no covariates
+  a[2]<-0
+  a[1]~ dnorm(0,1) ##1.56, is cure
+  cure<-exp(a[1])/(exp(a[1])+exp(a[2]))
+  median ~ dlnorm(log(2), 1)
+  lambda<-median/pow(log(2), 1/alpha)
+  alpha ~dlnorm(log(1),1) 
+  inc<-1-cure
+  #Posterior predictive distribution
+  for(j in 1:m){
+  y_prob[j]<-cure+(1-cure)*exp(-pow(grid[j]/lambda, alpha))
+  }
+}"
+
+
+n=400 ##400, 4000
+nsim=5##Should be higher but for illustrative purposes
+b1pi<--1.7
+b1delta<--1.2
+lambda<-2.5
+alpha<-1.5
+invals4 <- list(median=1, alpha=1)
+pars_basic4<-c("a","alpha", "lambda", "prev","cure", "inc", "y_prob")
+pars_basic4b<-c("a","alpha", "lambda", "cure", "inc", "y_prob")
+model1<-"baselineresult2+li2+ri2~1"
+prevpara<-exp(b1pi)/(exp(b1pi)+exp(b1delta)+1)
+curepara<-exp(b1delta)/(exp(b1pi)+exp(b1delta)+1)
+yr2s<-curepara+(1-curepara-prevpara)*(1-pweibull(2, alpha,lambda))
+yr5s<-curepara+(1-curepara-prevpara)*(1-pweibull(5, alpha,lambda))
+yr10s<-curepara+(1-curepara-prevpara)*(1-pweibull(10, alpha,lambda))
+grid=c(2,5,10)
+
+ansmatanV<-matrix(data=NA, nrow=nsim, ncol=54)
+ansmatanPI<-matrix(data=NA, nrow=nsim, ncol=24)
+ansmatanICB<-matrix(data=NA, nrow=nsim, ncol=42)
+  
+for(i in 1:nsim){
+  print(i)
+  simdata<-datasetfun(n,b1pi, b1delta, lambda=lambda, alpha=alpha, baselinetestprob=0.50, covprob=0)
+  dat<-list(n=nrow(simdata), li=simdata$li, ri=simdata$ri, 
+            c1=simdata$c1, c2=simdata$c2, c3=simdata$c3, c4=simdata$c4, 
+            zeros=rep(0, nrow(simdata)), grid=grid, m=length(grid))
+  jagscallcov<-jags.model(textConnection(picmodelV), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4), n.iter=10000)  
+  result<-as.mcmc(do.call(rbind, sam4acov))
+  result<-result[1001:10000,]
+  ansmatanV[i,]<-c(alpha, median(result[,4]), median(result[,4])-alpha, (median(result[,4])-alpha)^2, sum(quantile(result[,4], c(0.025))< alpha & quantile(result[,4], c(0.975))> alpha), quantile(result[,4], c(0.975))-quantile(result[,4], c(0.025)),
+                   lambda, median(result[,7]), median(result[,7])-lambda, (median(result[,7])-lambda)^2, sum(quantile(result[,7], c(0.025))< lambda & quantile(result[,7], c(0.975))> lambda), quantile(result[,7], c(0.975))-quantile(result[,7], c(0.025)),
+                   b1pi, median(result[,1]), median(result[,1])-b1pi,(median(result[,1])-b1pi)^2, sum(quantile(result[,1], c(0.025))< b1pi & quantile(result[,1], c(0.975))> b1pi), quantile(result[,1], c(0.975))-quantile(result[,1], c(0.025)),
+                   b1delta, median(result[,3]), median(result[,3])-b1delta, (median(result[,3])-b1delta)^2, sum(quantile(result[,3], c(0.025))< b1delta & quantile(result[,3], c(0.975))> b1delta), quantile(result[,3], c(0.975))-quantile(result[,3], c(0.025)),
+                   yr2s, median(result[,9]), median(result[,9])-yr2s, (median(result[,9])-yr2s)^2, sum(quantile(result[,9], c(0.025))< yr2s & quantile(result[,9], c(0.975))> yr2s), quantile(result[,9], c(0.975))-quantile(result[,9], c(0.025)),
+                   yr5s, median(result[,10]), median(result[,10])-yr5s, (median(result[,10])-yr5s)^2, sum(quantile(result[,10], c(0.025))< yr5s & quantile(result[,10], c(0.975))> yr5s), quantile(result[,10], c(0.975))-quantile(result[,10], c(0.025)),
+                   yr10s, median(result[,11]), median(result[,11])-yr10s, (median(result[,11])-yr10s)^2, sum(quantile(result[,11], c(0.025))< yr10s & quantile(result[,11], c(0.975))> yr10s), quantile(result[,11], c(0.975))-quantile(result[,11], c(0.025)),
+                   prevpara, median(result[,8]), median(result[,8])-prevpara, (median(result[,8])-prevpara)^2, sum(quantile(result[,8], c(0.025))< prevpara & quantile(result[,8], c(0.975))> prevpara), quantile(result[,8], c(0.975))-quantile(result[,8], c(0.025)),
+                   curepara, median(result[,5]), median(result[,5])-curepara, (median(result[,5])-curepara)^2, sum(quantile(result[,5], c(0.025))< curepara & quantile(result[,5], c(0.975))> curepara), quantile(result[,5], c(0.975))-quantile(result[,5], c(0.025))
+  ) 
+  jagscallcov<-jags.model(textConnection(icmodelV), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4b), n.iter=10000)  
+  result<-as.mcmc(do.call(rbind, sam4acov))
+  result<-result[1001:10000,]
+  ansmatanICB[i,]<-c(alpha, median(result[,3]), median(result[,3])-alpha, (median(result[,3])-alpha)^2, sum(quantile(result[,3], c(0.025))< alpha & quantile(result[,3], c(0.975))> alpha), quantile(result[,3], c(0.975))-quantile(result[,3], c(0.025)),
+                   lambda, median(result[,6]), median(result[,6])-lambda, (median(result[,6])-lambda)^2, sum(quantile(result[,6], c(0.025))< lambda & quantile(result[,6], c(0.975))> lambda), quantile(result[,6], c(0.975))-quantile(result[,6], c(0.025)),
+                   b1pi, median(result[,1]), median(result[,1])-b1pi,(median(result[,1])-b1pi)^2, sum(quantile(result[,1], c(0.025))< b1pi & quantile(result[,1], c(0.975))> b1pi), quantile(result[,1], c(0.975))-quantile(result[,1], c(0.025)),
+                   yr2s, median(result[,7]), median(result[,7])-yr2s, (median(result[,7])-yr2s)^2, sum(quantile(result[,7], c(0.025))< yr2s & quantile(result[,7], c(0.975))> yr2s), quantile(result[,7], c(0.975))-quantile(result[,7], c(0.025)),
+                   yr5s, median(result[,8]), median(result[,8])-yr5s, (median(result[,8])-yr5s)^2, sum(quantile(result[,8], c(0.025))< yr5s & quantile(result[,8], c(0.975))> yr5s), quantile(result[,8], c(0.975))-quantile(result[,8], c(0.025)),
+                   yr10s, median(result[,9]), median(result[,9])-yr10s, (median(result[,9])-yr10s)^2, sum(quantile(result[,9], c(0.025))< yr10s & quantile(result[,9], c(0.975))> yr10s), quantile(result[,9], c(0.975))-quantile(result[,9], c(0.025)),
+                   curepara, median(result[,4]), median(result[,4])-curepara, (median(result[,4])-curepara)^2, sum(quantile(result[,4], c(0.025))< curepara & quantile(result[,4], c(0.975))> curepara), quantile(result[,4], c(0.975))-quantile(result[,4], c(0.025))
+  )
+    ansmatanPI[i,]<-tryCatch({
+      fit1<-PIMixture(p.model=model1,data=simdata, model="logistic-Weibull")
+      coeffvals<-fit1$regression.coef$Coef.
+      cismat<-matrix(data=NA, nrow=10000, ncol=3)
+      sampleprevec<-rep(NA, 10000)
+      sampleprevcovec<-rep(NA, 10000)
+      for(k in 1:10000){
+        samplepara<-mvrnorm(1, mu=coeffvals, Sigma=fit1$covariance)
+        sampleprev<-exp(samplepara[1])/(1+exp(samplepara[1]))
+        sampleprevec[k]<-exp(samplepara[1])/(1+exp(samplepara[1]))
+        samplelambda<-exp(samplepara[2])
+        samplealpha<-1/samplepara[3]
+        cismat[k,]<-(1-sampleprev)*exp(-(grid/samplelambda)^samplealpha)
+      }
+      c(yr2s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(2/exp(coeffvals[2]))^(1/coeffvals[3])), (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(2/exp(coeffvals[2]))^(1/coeffvals[3]))-yr2s,((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(2/exp(coeffvals[2]))^(1/coeffvals[3]))-yr2s)^2 ,sum(quantile(cismat[,1], prob=c(0.025)) < yr2s & quantile(cismat[,1], prob=c(0.975))> yr2s) , quantile(cismat[,1], prob=c(0.975))- quantile(cismat[,1], prob=c(0.025)),
+        yr5s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(5/exp(coeffvals[2]))^(1/coeffvals[3])), (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(5/exp(coeffvals[2]))^(1/coeffvals[3]))-yr5s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(5/exp(coeffvals[2]))^(1/coeffvals[3]))-yr5s)^2,sum(quantile(cismat[,2], prob=c(0.025)) < yr5s & quantile(cismat[,2], prob=c(0.975))> yr5s), quantile(cismat[,2], prob=c(0.975))- quantile(cismat[,2], prob=c(0.025)),
+        yr10s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[2]))^(1/coeffvals[3])),(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[2]))^(1/coeffvals[3]))-yr10s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[2]))^(1/coeffvals[3]))-yr10s)^2,sum(quantile(cismat[,3], prob=c(0.025)) < yr10s & quantile(cismat[,3], prob=c(0.975))> yr10s) , quantile(cismat[,3], prob=c(0.975))-quantile(cismat[,3], prob=c(0.025)),
+        prevpara, exp(coeffvals[1])/(1+exp(coeffvals[1])),  exp(coeffvals[1])/(1+exp(coeffvals[1]))-prevpara, (exp(coeffvals[1])/(1+exp(coeffvals[1]))-prevpara)^2, sum(quantile(sampleprevec, prob=c(0.025)) < prevpara & quantile(sampleprevec, prob=c(0.975), na.rm=TRUE)> prevpara), quantile(sampleprevec, prob=c(0.975), na.rm=TRUE)- quantile(sampleprevec, prob=c(0.025), na.rm=TRUE)
+      ) 
+    }, error=function(e){tryCatch({
+      fit1<-PIMixture(p.model=model1,data=simdata, model="logistic-Weibull")
+      coeffvals<-fit1$regression.coef$Coef.
+      c(yr2s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(2/exp(coeffvals[2]))^(1/coeffvals[3])), (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(2/exp(coeffvals[2]))^(1/coeffvals[3]))-yr2s,((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(2/exp(coeffvals[2]))^(1/coeffvals[3]))-yr2s)^2 ,
+        NA , NA,
+        yr5s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(5/exp(coeffvals[2]))^(1/coeffvals[3])), (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(5/exp(coeffvals[2]))^(1/coeffvals[3]))-yr5s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(5/exp(coeffvals[2]))^(1/coeffvals[3])))^2, 
+        NA, NA,
+        yr10s, (1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[2]))^(1/coeffvals[3])),(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[2]))^(1/coeffvals[3]))-yr10s, ((1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*exp(-(10/exp(coeffvals[2]))^(1/coeffvals[3]))-yr10s)^2,
+        NA, NA,
+        prevpara, exp(coeffvals[1])/(1+exp(coeffvals[1])),  exp(coeffvals[1])/(1+exp(coeffvals[1]))-prevpara, (exp(coeffvals[1])/(1+exp(coeffvals[1]))-prevpara)^2, 
+        NA, NA
+      )
+    }, error= function(e){
+      rep(NA,24)})
+    })
+}
+```
+
+```{r sensitive simulation results}
+yr2s1=c(round(mean(ansmatanICB[,19], na.rm=TRUE),3), "Bayes. Cure", round(colMeans(ansmatanICB[,20:24], na.rm=TRUE),3))
+yr2s2=c(round(mean(ansmatanV[,25], na.rm=TRUE),3), "PIC", round(colMeans(ansmatanV[,26:30], na.rm=TRUE),3))
+yr2s3=c(round(mean(ansmatanPI[,1], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,2:6], na.rm=TRUE),3))
+
+yr5s1=c(round(mean(ansmatanICB[,25], na.rm=TRUE),3), "Bayes. Cure", round(colMeans(ansmatanICB[,26:30], na.rm=TRUE),3))
+yr5s2=c(round(mean(ansmatanV[,31], na.rm=TRUE),3), "PIC", round(colMeans(ansmatanV[,32:36], na.rm=TRUE),3))
+yr5s3=c(round(mean(ansmatanPI[,7], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,8:12], na.rm=TRUE),3))
+
+yr10s1=c(round(mean(ansmatanICB[,31], na.rm=TRUE),3), "Bayes. Cure", round(colMeans(ansmatanICB[,32:36], na.rm=TRUE),3))
+yr10s2=c(round(mean(ansmatanV[,37], na.rm=TRUE),3), "PIC", round(colMeans(ansmatanV[,38:42], na.rm=TRUE),3))
+yr10s3<-c( round(mean(ansmatanPI[,13], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,14:18], na.rm=TRUE),3))
+
+prevalence162=c(round(mean(ansmatanV[,43], na.rm=TRUE),3), "PIC", round(colMeans(ansmatanV[,44:48], na.rm=TRUE),3))
+prevalence163<-c(round(mean(ansmatanPI[,19], na.rm=TRUE),3), "PI", round(colMeans(ansmatanPI[,20:24], na.rm=TRUE),3))
+
+cure161=c(round(mean(ansmatanICB[,37], na.rm=TRUE),3), "Bayes. Cure", round(colMeans(ansmatanICB[,38:42], na.rm=TRUE),3))
+cure162=c(round(mean(ansmatanV[,49], na.rm=TRUE),3), "PIC", round(colMeans(ansmatanV[,50:54], na.rm=TRUE),3))
+
+simtab2<-rbind(yr2s1,yr2s2, yr2s3,
+                yr5s1, yr5s2,yr5s3,
+               yr10s1, yr10s2,yr10s3,
+               prevalence162, prevalence163,
+               cure161, cure162)
+
+
+colnames(simtab2)<-c("True value", "Model", "Mean", "Bias", "MSE", "Coverage", "95% CI width" )
+row.names(simtab2)<-c("2 year survival probability", "", "","","5 year survival probability", "","","", "10 year survival probability",  "","","", "Prevalence","", "Cure", "","")
+
+knitr::kable(simtab2, digits=3)
+
+```
+
+##this code tests how long the methods take to estimate parameters under sample sizes of 40,400 and 4000
+```{r test time of functions}
+n=40 ##400, 4000
+nsim=2 ##Should be higher but for illustrative purposes
+b1pi<-0.799
+b1delta<-2.296
+b2pi<--1.498
+b2delta<--0.762
+lambda<-2.2 
+alpha<-2
+lambdax<--0.5
+parlambdax<--lambdax/alpha
+invals4 <- list(median=1, alpha=1.4)
+pars_basic4<-c("a","b","covcoef","alpha", "lambda", "prev","cure", "inc", "parlambdax", "prevcov", "curecov", "inccov", "y_prob", 'y_prov_cov')
+model1<-"baselineresult2+li2+ri2~covbin"
+grid=c(2,5,10)
+
+simdata<-datasetfun(n,b1pi, b1delta, b2pi, b2delta, lambda, alpha, lambdax, baselinetestprob=0.88, covprob=0.24)
+
+picmodelcovIfun<-function(simdata){
+  dat<-list(n=nrow(simdata), li=simdata$li, ri=simdata$ri, 
+            c1=simdata$c1, c2=simdata$c2, c3=simdata$c3, c4=simdata$c4, 
+            zeros=rep(0, nrow(simdata)), covbin=simdata$covbin, grid=grid, m=length(grid))
+  jagscallcov<-jags.model(textConnection(picmodelcovI), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4), n.iter=10000)
+}
+
+picmodelcovVfun<-function(simdata){
+  dat<-list(n=nrow(simdata), li=simdata$li, ri=simdata$ri, 
+            c1=simdata$c1, c2=simdata$c2, c3=simdata$c3, c4=simdata$c4, 
+            zeros=rep(0, nrow(simdata)), covbin=simdata$covbin, grid=grid, m=length(grid))
+  jagscallcov<-jags.model(textConnection(picmodelcovV), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4), n.iter=10000)
+}
+
+picmodelcovMfun<-function(simdata){
+  dat<-list(n=nrow(simdata), li=simdata$li, ri=simdata$ri, 
+            c1=simdata$c1, c2=simdata$c2, c3=simdata$c3, c4=simdata$c4, 
+            zeros=rep(0, nrow(simdata)), covbin=simdata$covbin, grid=grid, m=length(grid))
+  jagscallcov<-jags.model(textConnection(picmodelcovM), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4), n.iter=10000)
+}
+
+icmodelcovVfun<-function(simdata){
+  dat<-list(n=nrow(simdata), li=simdata$li, ri=simdata$ri, 
+            c1=simdata$c1, c2=simdata$c2, c3=simdata$c3, c4=simdata$c4, 
+            zeros=rep(0, nrow(simdata)), covbin=simdata$covbin, grid=grid, m=length(grid))
+  jagscallcov<-jags.model(textConnection(icmodelV), data=dat, quiet=TRUE, n.chains=2, inits=invals4)
+  sam4acov<-coda.samples(jagscallcov, c(pars_basic4), n.iter=10000)
+}
+
+
+pimodelfun<-function(simdata){
+  tryCatch({
+      fit1<-PIMixture(p.model=model1,data=simdata, model="logistic-Weibull")
+      coeffvals<-fit1$regression.coef$Coef.
+      cismat<-matrix(data=NA, nrow=10000, ncol=3)
+      cismatcov<-matrix(data=NA, nrow=10000, ncol=3)
+      sampleprevec<-rep(NA, 10000)
+      sampleprevcovec<-rep(NA, 10000)
+      for(k in 1:10000){
+        samplepara<-mvrnorm(1, mu=coeffvals, Sigma=fit1$covariance)
+        sampleprev<-exp(samplepara[1])/(1+exp(samplepara[1]))
+        sampleprevec[k]<-exp(samplepara[1])/(1+exp(samplepara[1]))
+        sampleprevcov<-exp(samplepara[1]+samplepara[2])/(1+exp(samplepara[1]+samplepara[2]))
+        sampleprevcovec[k]<-exp(samplepara[1]+samplepara[2])/(1+exp(samplepara[1]+samplepara[2]))
+        samplelambda<-exp(samplepara[3])
+        samplealpha<-1/samplepara[5]
+        cismat[k,]<-(1-sampleprev)*exp(-(grid/samplelambda)^samplealpha)
+        cismatcov[k,]<-(1-sampleprevcov)*exp(-(grid/samplelambda*exp(-samplepara[4]))^samplealpha)
+      }
+    }, error=function(e){tryCatch({
+      fit1<-PIMixture(p.model=model1,data=simdata, model="logistic-Weibull")
+      coeffvals<-fit1$regression.coef$Coef.
+    }, error= function(e){
+      rep(NA,48)})
+    })
+}      
+      
+timeresultstab40<-matrix(data=NA, nrow=10, ncol=5)
+for (i in 1:10){
+  simdata<-datasetfun(40,b1pi, b1delta, b2pi, b2delta, lambda, alpha, lambdax, baselinetestprob=0.88, covprob=0.24)
+  t1 <- system.time(picmodelcovIfun(simdata))["elapsed"]
+  t2 <- system.time(picmodelcovVfun(simdata))["elapsed"]
+  t3 <- system.time(picmodelcovMfun(simdata))["elapsed"]
+  t4 <- system.time(pimodelfun(simdata))["elapsed"]
+  t5 <- system.time(icmodelcovVfun(simdata))["elapsed"]
+  timeresultstab40[i,]<-c(t1,t2,t3,t4,t5)
+}
+
+mess400<-matrix(data=NA, nrow=10, ncol=1)
+for (i in 1:10){
+  simdata<-datasetfun(400,b1pi, b1delta, b2pi, b2delta, lambda, alpha, lambdax, baselinetestprob=0.88, covprob=0.24)
+  t5 <- system.time(icmodelcovVfun(simdata))["elapsed"]
+  mess400[i,]<-c(t5)
+}
+
+timeresultstab400<-matrix(data=NA, nrow=10, ncol=5)
+for (i in 1:10){
+  simdata<-datasetfun(400,b1pi, b1delta, b2pi, b2delta, lambda, alpha, lambdax, baselinetestprob=0.88, covprob=0.24)
+  t1 <- system.time(picmodelcovIfun(simdata))["elapsed"]
+  t2 <- system.time(picmodelcovVfun(simdata))["elapsed"]
+  t3 <- system.time(picmodelcovMfun(simdata))["elapsed"]
+  t4 <- system.time(pimodelfun(simdata))["elapsed"]
+  t5 <- system.time(icmodelcovVfun(simdata))["elapsed"]
+  timeresultstab400[i,]<-c(t1,t2,t3,t4,t5)
+}
+
+timeresultstab4000<-matrix(data=NA, nrow=10, ncol=5)
+for (i in 2:10){
+  print(i)
+  simdata<-datasetfun(4000,b1pi, b1delta, b2pi, b2delta, lambda, alpha, lambdax, baselinetestprob=0.88, covprob=0.24)
+  t1 <- system.time(picmodelcovIfun(simdata))["elapsed"]
+  t2 <- system.time(picmodelcovVfun(simdata))["elapsed"]
+  t3 <- system.time(picmodelcovMfun(simdata))["elapsed"]
+  t4 <- system.time(pimodelfun(simdata))["elapsed"]
+  t5 <- system.time(icmodelcovVfun(simdata))["elapsed"]
+  timeresultstab4000[i,]<-c(t1,t2,t3,t4, t5)
+}
+
+write.csv(timeresultstab4000, file= "timeresultstab4000.csv")
+write.csv(timeresultstab400, file= "timeresultstab400.csv")
+write.csv(timeresultstab40, file= "timeresultstab40.csv")
+```
