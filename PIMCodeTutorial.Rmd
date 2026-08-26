@@ -999,8 +999,8 @@ picmodelV<-"model{
   }
   # Prior distributions
   a[2]<-0
-  a[1]~ dnorm(0, 1) 
-  a[3]~ dnorm(0, 1) 
+  a[1]~ dnorm(0, 1/10) 
+  a[3]~ dnorm(0, 1/10) 
   median ~ dlnorm(log(2), 1)
   lambda<-median/pow(log(2), 1/alpha)
   alpha ~dlnorm(log(1),1) 
@@ -1031,7 +1031,7 @@ icmodelV<-"model{
   # Prior distributions
   #just intercept, no covariates
   a[2]<-0
-  a[1]~ dnorm(0,1) ##1.56, is cure
+  a[1]~ dnorm(0,1/10)
   cure<-exp(a[1])/(exp(a[1])+exp(a[2]))
   median ~ dlnorm(log(2), 1)
   lambda<-median/pow(log(2), 1/alpha)
@@ -1067,7 +1067,7 @@ ansmatanICB<-matrix(data=NA, nrow=nsim, ncol=42)
   
 for(i in 1:nsim){
   print(i)
-  simdata<-datasetfun(n,b1pi, b1delta, lambda=lambda, alpha=alpha, baselinetestprob=0.50, covprob=0)
+  simdata<-datasetfun(n,b1pi, b1delta, lambda=lambda, alpha=alpha, baselinetestprob=0.54, covprob=0)
   dat<-list(n=nrow(simdata), li=simdata$li, ri=simdata$ri, 
             c1=simdata$c1, c2=simdata$c2, c3=simdata$c3, c4=simdata$c4, 
             zeros=rep(0, nrow(simdata)), grid=grid, m=length(grid))
