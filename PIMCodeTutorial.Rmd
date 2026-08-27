@@ -1161,7 +1161,7 @@ simtab2<-rbind(yr2s1,yr2s2, yr2s3,
 
 
 colnames(simtab2)<-c("True value", "Model", "Mean", "Bias", "MSE", "Coverage", "95% CI width" )
-row.names(simtab2)<-c("2 year survival probability", "", "","","5 year survival probability", "","","", "10 year survival probability",  "","","", "Prevalence","", "Cure", "","")
+row.names(simtab2)<-c("2 year survival probability", "", "","5 year survival probability", "","", "10 year survival probability",  "","", "Prevalence","", "Cure", "")
 
 knitr::kable(simtab2, digits=3)
 
