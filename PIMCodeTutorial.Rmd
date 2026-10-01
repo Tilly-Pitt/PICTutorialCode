@@ -958,7 +958,7 @@ ggplot()+geom_ribbon(data = plot_male, aes(x=time, ymin=lower, ymax=upper, fill=
   geom_step(data=km_df_m, aes(x=time_km, y=median_km, color="NPMLE",linetype="NPMLE"), linewidth=1) + 
   geom_ribbon(data=km_df_m, aes(x=time_km, ymin=lower_km, ymax=upper_km, fill="NPMLE"), alpha=0.25) +
   theme_bw()+
-  labs( title = "Estimated probabilty of not reaching VA \U2265  70 over time for Males",
+  labs( title = "Estimated probability of not reaching VA \U2265  70 over time for Males",
     x="Time (months) since treatment initiation", y="Probability of VA \U2264 69", color="Fit", fill="Fit", linetype="Fit")+scale_x_continuous(breaks = c(0,10, 20,30, 40,50), expand = c(0, 0), limits=c(0,50))+
   theme(plot.title = element_text(hjust = 0.5, size=18), legend.text = element_text(size = 16), axis.text = element_text(size = 14), axis.title.x = element_text(size = 16), axis.title.y = element_text(size = 16), legend.title = element_text(size = 16))+scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8,1), limits=c(0,1), expand = c(0, 0))
 
@@ -968,15 +968,11 @@ ggplot()+geom_ribbon(data = plot_female, aes(x=time, ymin=lower, ymax=upper, fil
   geom_step(data=km_df_f, aes(x=time_km, y=median_km, color="NPMLE",linetype="NPMLE"), linewidth=1) + 
   geom_ribbon(data=km_df_f, aes(x=time_km, ymin=lower_km, ymax=upper_km, fill="NPMLE"), alpha=0.25) +
   theme_bw()+
-  labs( title = "Estimated probabilty of not reaching VA \U2265  70 over time for Females",
+  labs( title = "Estimated probability of not reaching VA \U2265  70 over time for Females",
     x="Time (months) since treatment initiation", y="Probability of VA \U2264 69", color="Fit", fill="Fit", linetype="Fit")+scale_x_continuous(breaks = c(0,10, 20,30, 40,50), expand = c(0, 0), limits=c(0,50))+
   theme(plot.title = element_text(hjust = 0.5, size=18), legend.text = element_text(size = 16), axis.text = element_text(size = 14), axis.title.x = element_text(size = 16), axis.title.y = element_text(size = 16), legend.title = element_text(size = 16))+scale_y_continuous(breaks = c(0, 0.2, 0.4, 0.6, 0.8,1), limits=c(0,1), expand = c(0, 0))#+ 
 
-##Survival probability at 4 years (48 months)
-dmosurv48<-rbind(1-(mean(result[,7])+(1-mean(result[,7])-mean(result[,5]))*pweibull(48, mean(result[,4]), mean(result[,6]))), 1-(exp(coeffvals[1])/(1+exp(coeffvals[1]))+(1-exp(coeffvals[1])/(1+exp(coeffvals[1])))*pweibull(48, 1/coeffvals[3], exp(coeffvals[2]))))
-rownames(dmosurv48)<-c("PIC model", "PI model")
-colnames(dmosurv48)<-c("4 year survival estimate")
-knitr::kable(dmosurv48, caption="Survival estimate at 4 years for the DMO data using PI and PIC model")
+
 ```
 
 ##This is the code for the smaller sensitivity analysis in the appendix
